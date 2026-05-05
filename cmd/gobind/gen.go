@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"unicode"
 	"unicode/utf8"
 
@@ -49,11 +50,16 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 	case "java":
 		g := &bind.JavaGen{
 			JavaPkg:   *javaPkg,
+			SeqPkg:    seqPkgName(),
+			Soname:    *soname,
 			Generator: generator,
 		}
 		g.Init(classes)
 
 		pkgname := bind.JavaPkgName(*javaPkg, p)
+		if p == nil {
+			pkgname = seqPkgName()
+		}
 		pkgDir := strings.Replace(pkgname, ".", "/", -1)
 		buf.Reset()
 		w, closer := writer(filepath.Join("java", pkgDir, fname))
@@ -87,17 +93,13 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 			repo := filepath.Clean(filepath.Join(dir, "..")) // golang.org/x/mobile directory.
 			for _, javaFile := range []string{"Seq.java"} {
 				src := filepath.Join(repo, "bind/java/"+javaFile)
-				in, err := os.Open(src)
-				if err != nil {
-					errorf("failed to open Java support file: %v", err)
-				}
-				defer in.Close()
-				w, closer := writer(filepath.Join("java", "go", javaFile))
-				defer closer()
-				if _, err := io.Copy(w, in); err != nil {
-					errorf("failed to copy Java support file: %v", err)
+				w, closer := writer(filepath.Join("java", filepath.FromSlash(strings.ReplaceAll(seqPkgName(), ".", "/")), javaFile))
+				if err := renderSupportTemplate(w, src, supportTemplateData()); err != nil {
+					errorf("failed to render Java support file: %v", err)
+					closer()
 					return
 				}
+				closer()
 			}
 			// Copy support files
 			if err != nil {
@@ -109,9 +111,9 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 				errorf("unable to import bind/java: %v", err)
 				return
 			}
-			copyFile(filepath.Join("src", "gobind", "seq_android.c"), filepath.Join(javaDir, "seq_android.c.support"))
+			renderFile(filepath.Join("src", "gobind", "seq_android.c"), filepath.Join(javaDir, "seq_android.c.support"), supportTemplateData())
 			copyFile(filepath.Join("src", "gobind", "seq_android.go"), filepath.Join(javaDir, "seq_android.go.support"))
-			copyFile(filepath.Join("src", "gobind", "seq_android.h"), filepath.Join(javaDir, "seq_android.h"))
+			renderFile(filepath.Join("src", "gobind", "seq_android.h"), filepath.Join(javaDir, "seq_android.h"), supportTemplateData())
 		}
 	case "go":
 		w, closer := writer(filepath.Join("src", "gobind", fname))
@@ -168,6 +170,49 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 	default:
 		errorf("unknown target language: %q", lang)
 	}
+}
+
+type supportData struct {
+	SeqPkg      string
+	SeqPkgSlash string
+	SeqPkgJNI   string
+	Soname      string
+}
+
+func seqPkgName() string {
+	if *javaPkg != "" {
+		return *javaPkg + ".go"
+	}
+	if *soname != "" && *soname != "gojni" {
+		return "go." + *soname
+	}
+	return "go"
+}
+
+func supportTemplateData() supportData {
+	seqPkg := seqPkgName()
+	return supportData{
+		SeqPkg:      seqPkg,
+		SeqPkgSlash: strings.ReplaceAll(seqPkg, ".", "/"),
+		SeqPkgJNI:   strings.ReplaceAll(java.JNIMangle(seqPkg), ".", "_"),
+		Soname:      *soname,
+	}
+}
+
+func renderFile(dst, src string, data supportData) {
+	w, closer := writer(dst)
+	defer closer()
+	if err := renderSupportTemplate(w, src, data); err != nil {
+		errorf("failed to render support file: %v", err)
+	}
+}
+
+func renderSupportTemplate(w io.Writer, src string, data supportData) error {
+	tmpl, err := template.ParseFiles(src)
+	if err != nil {
+		return err
+	}
+	return tmpl.Execute(w, data)
 }
 
 func genPkgH(w io.Writer, pname string) {

@@ -37,6 +37,7 @@ func TestBindAndroid(t *testing.T) {
 		buildO = ""
 		buildTarget = ""
 		bindJavaPkg = ""
+		bindSoname = "gojni"
 	}()
 	buildN = true
 	buildX = true
@@ -55,6 +56,7 @@ func TestBindAndroid(t *testing.T) {
 	}
 	for _, tc := range tests {
 		bindJavaPkg = tc.javaPkg
+		bindSoname = "gojni"
 
 		buf := new(bytes.Buffer)
 		xout = buf
@@ -78,10 +80,14 @@ func TestBindAndroid(t *testing.T) {
 			outputData
 			AndroidPlatform string
 			JavaPkg         string
+			Soname          string
+			DefaultSoname   bool
 		}{
 			outputData:      output,
 			AndroidPlatform: platformRel,
 			JavaPkg:         tc.javaPkg,
+			Soname:          bindSoname,
+			DefaultSoname:   bindSoname == "gojni",
 		}
 
 		wantBuf := new(bytes.Buffer)
@@ -98,6 +104,29 @@ func TestBindAndroid(t *testing.T) {
 		if diff != "" {
 			t.Errorf("%+v: unexpected output:\n%s", tc, diff)
 		}
+	}
+}
+
+func TestBindSonameValidation(t *testing.T) {
+	tests := []struct {
+		soname string
+		valid  bool
+	}{
+		{"gojni", true},
+		{"gojni_test", true},
+		{"Gojni_123", true},
+		{"invalid-name", false},
+		{"1gojni", false},
+		{"gojni.test", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := validBindSoname(tc.soname); got != tc.valid {
+			t.Errorf("validBindSoname(%q) = %v, want %v", tc.soname, got, tc.valid)
+		}
+	}
+	if got, want := deriveBindSoname("com.corp.auth"), "gojni_com_corp_auth"; got != want {
+		t.Fatalf("deriveBindSoname returned %q, want %q", got, want)
 	}
 }
 
@@ -185,10 +214,10 @@ func TestBindApple(t *testing.T) {
 
 var bindAndroidTmpl = template.Must(template.New("output").Parse(`GOMOBILE={{.GOPATH}}/pkg/gomobile
 WORK=$WORK
-GOOS=android CGO_ENABLED=1 gobind -lang=go,java -outdir=$WORK{{if .JavaPkg}} -javapkg={{.JavaPkg}}{{end}} golang.org/x/mobile/asset
+GOOS=android CGO_ENABLED=1 gobind -lang=go,java -outdir=$WORK{{if .JavaPkg}} -javapkg={{.JavaPkg}} -soname={{.Soname}}{{end}} golang.org/x/mobile/asset
 mkdir -p $WORK/src-android-arm
-PWD=$WORK/src-android-arm GOMODCACHE=$GOPATH/pkg/mod GOOS=android GOARCH=arm CC=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang CXX=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang++ CGO_ENABLED=1 GOARM=7 GOPATH=$WORK:$GOPATH go mod tidy
-PWD=$WORK/src-android-arm GOMODCACHE=$GOPATH/pkg/mod GOOS=android GOARCH=arm CC=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang CXX=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang++ CGO_ENABLED=1 GOARM=7 GOPATH=$WORK:$GOPATH go build -x -buildmode=c-shared -o=$WORK/android/src/main/jniLibs/armeabi-v7a/libgojni.so ./gobind
+PWD=$WORK/src-android-arm GOMODCACHE=$GOPATH/pkg/mod GOOS=android GOARCH=arm CC=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang CXX=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang++ CGO_ENABLED=1 GOARM=7 GOPATH=$WORK:$GOPATH{{if not .DefaultSoname}} CGO_CFLAGS=-DGOJNI_SONAME={{.Soname}} CGO_LDFLAGS=-Wl,-soname,lib{{.Soname}}.so{{end}} go mod tidy
+PWD=$WORK/src-android-arm GOMODCACHE=$GOPATH/pkg/mod GOOS=android GOARCH=arm CC=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang CXX=$NDK_PATH/toolchains/llvm/prebuilt/{{.NDKARCH}}/bin/armv7a-linux-androideabi16-clang++ CGO_ENABLED=1 GOARM=7 GOPATH=$WORK:$GOPATH{{if not .DefaultSoname}} CGO_CFLAGS=-DGOJNI_SONAME={{.Soname}} CGO_LDFLAGS=-Wl,-soname,lib{{.Soname}}.so{{end}} go build -x -buildmode=c-shared -o=$WORK/android/src/main/jniLibs/armeabi-v7a/lib{{.Soname}}.so ./gobind
 PWD=$WORK/java javac -d $WORK/javac-output -source 1.8 -target 1.8 -bootclasspath {{.AndroidPlatform}}/android.jar *.java
 jar c -C $WORK/javac-output .
 `))

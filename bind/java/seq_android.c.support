@@ -18,6 +18,9 @@
 #include "_cgo_export.h"
 
 #define NULL_REFNUM 41
+#ifdef GOJNI_SONAME
+#define jvm GOJNI_SYM(_jvm)
+#endif
 
 // initClasses are only exported from Go if reverse bindings are used.
 // If they're not, weakly define a no-op function.
@@ -304,7 +307,7 @@ void go_seq_dec_ref(int32_t ref) {
 }
 
 JNIEXPORT void JNICALL
-Java_go_Seq_init(JNIEnv *env, jclass clazz) {
+Java_{{.SeqPkgJNI}}_Seq_init(JNIEnv *env, jclass clazz) {
 	if ((*env)->GetJavaVM(env, &jvm) != 0) {
 		LOG_FATAL("failed to get JVM");
 	}
@@ -313,7 +316,7 @@ Java_go_Seq_init(JNIEnv *env, jclass clazz) {
 	}
 
 	seq_class = (*env)->NewGlobalRef(env, clazz);
-	seq_getRef = (*env)->GetStaticMethodID(env, seq_class, "getRef", "(I)Lgo/Seq$Ref;");
+	seq_getRef = (*env)->GetStaticMethodID(env, seq_class, "getRef", "(I)L{{.SeqPkgSlash}}/Seq$Ref;");
 	if (seq_getRef == NULL) {
 		LOG_FATAL("failed to find method Seq.getRef");
 	}
@@ -329,11 +332,11 @@ Java_go_Seq_init(JNIEnv *env, jclass clazz) {
 	if (seq_incRef == NULL) {
 		LOG_FATAL("failed to find method Seq.incRef");
 	}
-	seq_incGoObjectRef = (*env)->GetStaticMethodID(env, seq_class, "incGoObjectRef", "(Lgo/Seq$GoObject;)I");
+	seq_incGoObjectRef = (*env)->GetStaticMethodID(env, seq_class, "incGoObjectRef", "(L{{.SeqPkgSlash}}/Seq$GoObject;)I");
 	if (seq_incGoObjectRef == NULL) {
 		LOG_FATAL("failed to find method Seq.incGoObjectRef");
 	}
-	jclass ref_class = (*env)->FindClass(env, "go/Seq$Ref");
+	jclass ref_class = (*env)->FindClass(env, "{{.SeqPkgSlash}}/Seq$Ref");
 	if (ref_class == NULL) {
 		LOG_FATAL("failed to find the Seq.Ref class");
 	}
@@ -345,12 +348,12 @@ Java_go_Seq_init(JNIEnv *env, jclass clazz) {
 }
 
 JNIEXPORT void JNICALL
-Java_go_Seq_destroyRef(JNIEnv *env, jclass clazz, jint refnum) {
+Java_{{.SeqPkgJNI}}_Seq_destroyRef(JNIEnv *env, jclass clazz, jint refnum) {
 	DestroyRef(refnum);
 }
 
 JNIEXPORT void JNICALL
-Java_go_Seq_incGoRef(JNIEnv *env, jclass clazz, jint refnum, jobject ref) {
+Java_{{.SeqPkgJNI}}_Seq_incGoRef(JNIEnv *env, jclass clazz, jint refnum, jobject ref) {
 	IncGoRef(refnum);
 }
 

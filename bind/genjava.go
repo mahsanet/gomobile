@@ -24,6 +24,10 @@ type JavaGen struct {
 	// JavaPkg is the Java package prefix for the generated classes. The prefix is prepended to the Go
 	// package name to create the full Java package name.
 	JavaPkg string
+	// SeqPkg is the Java package for the gomobile runtime support classes.
+	SeqPkg string
+	// Soname is the Android shared library name without the lib prefix or .so suffix.
+	Soname string
 
 	*Generator
 
@@ -238,7 +242,7 @@ func (g *JavaGen) genStruct(s structInfo) {
 		pkgPath = g.Pkg.Path()
 	}
 	n := g.javaTypeName(s.obj.Name())
-	g.Printf(javaPreamble, g.javaPkgName(g.Pkg), n, g.gobindOpts(), pkgPath)
+	g.Printf(javaPreamble, g.javaPkgName(g.Pkg), n, g.gobindOpts(), pkgPath, g.seqPkgName())
 
 	fields := exportedFields(s.t)
 	methods := exportedMethodSet(types.NewPointer(s.obj.Type()))
@@ -547,7 +551,7 @@ func (g *JavaGen) genInterface(iface interfaceInfo) {
 	if g.Pkg != nil {
 		pkgPath = g.Pkg.Path()
 	}
-	g.Printf(javaPreamble, g.javaPkgName(g.Pkg), g.javaTypeName(iface.obj.Name()), g.gobindOpts(), pkgPath)
+	g.Printf(javaPreamble, g.javaPkgName(g.Pkg), g.javaTypeName(iface.obj.Name()), g.gobindOpts(), pkgPath, g.seqPkgName())
 
 	var exts []string
 	numM := iface.t.NumMethods()
@@ -972,15 +976,33 @@ func (g *JavaGen) genFromRefnum(toName, fromName string, t types.Type, o *types.
 	if isJava {
 		g.Printf("NULL, NULL")
 	} else {
-		g.Printf("proxy_class_%s_%s, proxy_class_%s_%s_cons", p, o.Name(), p, o.Name())
+		g.Printf("%s, %s", g.proxyClassVar(p, o.Name()), g.proxyClassConsVar(p, o.Name()))
 	}
 	g.Printf(");\n")
+}
+
+func (g *JavaGen) cGlobalName(name string) string {
+	if g.Soname == "" || g.Soname == "gojni" {
+		return name
+	}
+	return g.Soname + "_" + name
+}
+
+func (g *JavaGen) proxyClassVar(pkgPrefix, name string) string {
+	return g.cGlobalName(fmt.Sprintf("proxy_class_%s_%s", pkgPrefix, name))
+}
+
+func (g *JavaGen) proxyClassConsVar(pkgPrefix, name string) string {
+	return g.cGlobalName(fmt.Sprintf("proxy_class_%s_%s_cons", pkgPrefix, name))
 }
 
 func (g *JavaGen) gobindOpts() string {
 	opts := []string{"-lang=java"}
 	if g.JavaPkg != "" {
 		opts = append(opts, "-javapkg="+g.JavaPkg)
+	}
+	if g.Soname != "" && g.Soname != "gojni" {
+		opts = append(opts, "-soname="+g.Soname)
 	}
 	return strings.Join(opts, " ")
 }
@@ -995,7 +1017,17 @@ var javaNameReplacer = newNameSanitizer([]string{
 	"try", "void", "volatile", "while", "false", "null", "true"})
 
 func (g *JavaGen) javaPkgName(pkg *types.Package) string {
+	if pkg == nil && g.SeqPkg != "" {
+		return g.SeqPkg
+	}
 	return JavaPkgName(g.JavaPkg, pkg)
+}
+
+func (g *JavaGen) seqPkgName() string {
+	if g.SeqPkg != "" {
+		return g.SeqPkg
+	}
+	return "go"
 }
 
 // JavaPkgName returns the Java package name for a Go package
@@ -1263,7 +1295,7 @@ func (g *JavaGen) genMethodInterfaceProxy(oName string, m *types.Func) {
 	g.genInterfaceMethodSignature(m, oName, false, g.paramName)
 	g.Indent()
 	g.Printf("JNIEnv *env = go_seq_push_local_frame(%d);\n", params.Len())
-	g.Printf("jobject o = go_seq_from_refnum(env, refnum, proxy_class_%s_%s, proxy_class_%s_%s_cons);\n", g.pkgPrefix, oName, g.pkgPrefix, oName)
+	g.Printf("jobject o = go_seq_from_refnum(env, refnum, %s, %s);\n", g.proxyClassVar(g.pkgPrefix, oName), g.proxyClassConsVar(g.pkgPrefix, oName))
 	for i := 0; i < params.Len(); i++ {
 		pn := g.paramName(params, i)
 		g.genCToJava("_"+pn, pn, params.At(i).Type(), modeTransient)
@@ -1318,8 +1350,8 @@ func (g *JavaGen) GenH() error {
 	}
 	g.Printf(hPreamble, g.gobindOpts(), pkgPath, g.className())
 	for _, iface := range g.interfaces {
-		g.Printf("extern jclass proxy_class_%s_%s;\n", g.pkgPrefix, iface.obj.Name())
-		g.Printf("extern jmethodID proxy_class_%s_%s_cons;\n", g.pkgPrefix, iface.obj.Name())
+		g.Printf("extern jclass %s;\n", g.proxyClassVar(g.pkgPrefix, iface.obj.Name()))
+		g.Printf("extern jmethodID %s;\n", g.proxyClassConsVar(g.pkgPrefix, iface.obj.Name()))
 		g.Printf("\n")
 		for _, m := range iface.summary.callable {
 			if !g.isSigSupported(m.Type()) {
@@ -1331,8 +1363,8 @@ func (g *JavaGen) GenH() error {
 		}
 	}
 	for _, s := range g.structs {
-		g.Printf("extern jclass proxy_class_%s_%s;\n", g.pkgPrefix, s.obj.Name())
-		g.Printf("extern jmethodID proxy_class_%s_%s_cons;\n", g.pkgPrefix, s.obj.Name())
+		g.Printf("extern jclass %s;\n", g.proxyClassVar(g.pkgPrefix, s.obj.Name()))
+		g.Printf("extern jmethodID %s;\n", g.proxyClassConsVar(g.pkgPrefix, s.obj.Name()))
 	}
 	g.Printf("#endif\n")
 	if len(g.err) > 0 {
@@ -1451,8 +1483,8 @@ func (g *JavaGen) GenC() error {
 	g.Printf("\n")
 
 	for _, iface := range g.interfaces {
-		g.Printf("jclass proxy_class_%s_%s;\n", g.pkgPrefix, iface.obj.Name())
-		g.Printf("jmethodID proxy_class_%s_%s_cons;\n", g.pkgPrefix, iface.obj.Name())
+		g.Printf("jclass %s;\n", g.proxyClassVar(g.pkgPrefix, iface.obj.Name()))
+		g.Printf("jmethodID %s;\n", g.proxyClassConsVar(g.pkgPrefix, iface.obj.Name()))
 		for _, m := range iface.summary.callable {
 			if !g.isSigSupported(m.Type()) {
 				g.Printf("// skipped method %s.%s with unsupported parameter or return types\n\n", iface.obj.Name(), m.Name())
@@ -1462,8 +1494,8 @@ func (g *JavaGen) GenC() error {
 		}
 	}
 	for _, s := range g.structs {
-		g.Printf("jclass proxy_class_%s_%s;\n", g.pkgPrefix, s.obj.Name())
-		g.Printf("jmethodID proxy_class_%s_%s_cons;\n", g.pkgPrefix, s.obj.Name())
+		g.Printf("jclass %s;\n", g.proxyClassVar(g.pkgPrefix, s.obj.Name()))
+		g.Printf("jmethodID %s;\n", g.proxyClassConsVar(g.pkgPrefix, s.obj.Name()))
 	}
 	g.Printf("\n")
 	g.Printf("JNIEXPORT void JNICALL\n")
@@ -1479,14 +1511,14 @@ func (g *JavaGen) GenC() error {
 			}
 		}
 		g.Printf("clazz = (*env)->FindClass(env, %q);\n", g.jniClassSigPrefix(s.obj.Pkg())+g.javaTypeName(s.obj.Name()))
-		g.Printf("proxy_class_%s_%s = (*env)->NewGlobalRef(env, clazz);\n", g.pkgPrefix, s.obj.Name())
-		g.Printf("proxy_class_%s_%s_cons = (*env)->GetMethodID(env, clazz, \"<init>\", \"(I)V\");\n", g.pkgPrefix, s.obj.Name())
+		g.Printf("%s = (*env)->NewGlobalRef(env, clazz);\n", g.proxyClassVar(g.pkgPrefix, s.obj.Name()))
+		g.Printf("%s = (*env)->GetMethodID(env, clazz, \"<init>\", \"(I)V\");\n", g.proxyClassConsVar(g.pkgPrefix, s.obj.Name()))
 	}
 	for _, iface := range g.interfaces {
 		pkg := iface.obj.Pkg()
 		g.Printf("clazz = (*env)->FindClass(env, %q);\n", g.jniClassSigPrefix(pkg)+JavaClassName(pkg)+"$proxy"+iface.obj.Name())
-		g.Printf("proxy_class_%s_%s = (*env)->NewGlobalRef(env, clazz);\n", g.pkgPrefix, iface.obj.Name())
-		g.Printf("proxy_class_%s_%s_cons = (*env)->GetMethodID(env, clazz, \"<init>\", \"(I)V\");\n", g.pkgPrefix, iface.obj.Name())
+		g.Printf("%s = (*env)->NewGlobalRef(env, clazz);\n", g.proxyClassVar(g.pkgPrefix, iface.obj.Name()))
+		g.Printf("%s = (*env)->GetMethodID(env, clazz, \"<init>\", \"(I)V\");\n", g.proxyClassConsVar(g.pkgPrefix, iface.obj.Name()))
 		if isErrorType(iface.obj.Type()) {
 			// As a special case, Java Exceptions are passed to Go pretending to implement the Go error interface.
 			// To complete the illusion, use the Throwable.getMessage method for proxied calls to the error.Error method.
@@ -1570,7 +1602,7 @@ func (g *JavaGen) GenJava() error {
 	if g.Pkg != nil {
 		pkgPath = g.Pkg.Path()
 	}
-	g.Printf(javaPreamble, g.javaPkgName(g.Pkg), g.className(), g.gobindOpts(), pkgPath)
+	g.Printf(javaPreamble, g.javaPkgName(g.Pkg), g.className(), g.gobindOpts(), pkgPath, g.seqPkgName())
 
 	g.Printf("public abstract class %s {\n", g.className())
 	g.Indent()
@@ -1684,7 +1716,7 @@ const (
 //   autogenerated by gobind %[3]s %[4]s
 package %[1]s;
 
-import go.Seq;
+import %[5]s.Seq;
 
 `
 	cPreamble = gobindPreamble + `// JNI functions for the Go <=> Java bridge.

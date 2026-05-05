@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"golang.org/x/mobile/internal/importers"
@@ -26,6 +27,7 @@ var (
 	lang          = flag.String("lang", "", "target languages for bindings, either java, go, or objc. If empty, all languages are generated.")
 	outdir        = flag.String("outdir", "", "result will be written to the directory instead of stdout.")
 	javaPkg       = flag.String("javapkg", "", "custom Java package path prefix. Valid only with -lang=java.")
+	soname        = flag.String("soname", "gojni", "name for the Android output shared library. Valid only with -lang=java.")
 	prefix        = flag.String("prefix", "", "custom Objective-C name prefix. Valid only with -lang=objc.")
 	bootclasspath = flag.String("bootclasspath", "", "Java bootstrap classpath.")
 	classpath     = flag.String("classpath", "", "Java classpath.")
@@ -38,9 +40,18 @@ For usage details, see doc.go.`
 
 func main() {
 	flag.Parse()
+	if !validSoname(*soname) {
+		log.Fatalf("invalid -soname %q: must match [a-zA-Z][a-zA-Z0-9_]*", *soname)
+	}
 
 	run()
 	os.Exit(exitStatus)
+}
+
+var sonameRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
+func validSoname(s string) bool {
+	return sonameRE.MatchString(s)
 }
 
 func run() {

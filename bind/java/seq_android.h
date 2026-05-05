@@ -11,6 +11,32 @@
 #include <stdlib.h>
 #include <jni.h>
 
+#ifdef GOJNI_SONAME
+#define GOJNI_CONCAT1(a,b) a##b
+#define GOJNI_CONCAT(a,b) GOJNI_CONCAT1(a,b)
+#define GOJNI_SYM(name) GOJNI_CONCAT(GOJNI_SONAME, name)
+
+#define go_seq_dec_ref GOJNI_SYM(_go_seq_dec_ref)
+#define go_seq_inc_ref GOJNI_SYM(_go_seq_inc_ref)
+#define go_seq_unwrap GOJNI_SYM(_go_seq_unwrap)
+#define go_seq_to_refnum GOJNI_SYM(_go_seq_to_refnum)
+#define go_seq_to_refnum_go GOJNI_SYM(_go_seq_to_refnum_go)
+#define go_seq_from_refnum GOJNI_SYM(_go_seq_from_refnum)
+#define go_seq_maybe_throw_exception GOJNI_SYM(_go_seq_maybe_throw_exception)
+#define go_seq_get_exception GOJNI_SYM(_go_seq_get_exception)
+#define go_seq_to_java_bytearray GOJNI_SYM(_go_seq_to_java_bytearray)
+#define go_seq_from_java_bytearray GOJNI_SYM(_go_seq_from_java_bytearray)
+#define go_seq_release_byte_array GOJNI_SYM(_go_seq_release_byte_array)
+#define go_seq_to_java_string GOJNI_SYM(_go_seq_to_java_string)
+#define go_seq_from_java_string GOJNI_SYM(_go_seq_from_java_string)
+#define go_seq_push_local_frame GOJNI_SYM(_go_seq_push_local_frame)
+#define go_seq_pop_local_frame GOJNI_SYM(_go_seq_pop_local_frame)
+#define go_seq_find_class GOJNI_SYM(_go_seq_find_class)
+#define go_seq_get_static_method_id GOJNI_SYM(_go_seq_get_static_method_id)
+#define go_seq_get_method_id GOJNI_SYM(_go_seq_get_method_id)
+#define go_seq_isinstanceof GOJNI_SYM(_go_seq_isinstanceof)
+#endif
+
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, "go/Seq", __VA_ARGS__)
 #define LOG_FATAL(...)                                             \
   {                                                                \

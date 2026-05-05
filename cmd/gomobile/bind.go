@@ -8,11 +8,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -78,6 +80,18 @@ func runBind(cmd *command) error {
 	defer cleanup()
 
 	args := cmd.flag.Args()
+	sonameExplicit := false
+	cmd.flag.Visit(func(f *flag.Flag) {
+		if f.Name == "soname" {
+			sonameExplicit = true
+		}
+	})
+	if !sonameExplicit && bindJavaPkg != "" {
+		bindSoname = deriveBindSoname(bindJavaPkg)
+	}
+	if !validBindSoname(bindSoname) {
+		return fmt.Errorf("invalid -soname %q: must match [a-zA-Z][a-zA-Z0-9_]*", bindSoname)
+	}
 
 	targets, err := parseBuildTarget(buildTarget)
 	if err != nil {
@@ -110,6 +124,9 @@ func runBind(cmd *command) error {
 	if len(args) == 0 {
 		args = append(args, ".")
 	}
+	if len(args) > 1 && !sonameExplicit && bindSoname == "gojni" {
+		fmt.Fprintf(os.Stderr, "gomobile: warning: binding multiple packages with the default -soname %q may conflict with separately built AARs; prefer one bind invocation for all packages or pass explicit -soname values\n", bindSoname)
+	}
 
 	// TODO(ydnar): this should work, unless build tags affect loading a single package.
 	// Should we try to import packages with different build tags per platform?
@@ -141,14 +158,30 @@ func runBind(cmd *command) error {
 var (
 	bindPrefix        string // -prefix
 	bindJavaPkg       string // -javapkg
+	bindSoname        string // -soname
 	bindClasspath     string // -classpath
 	bindBootClasspath string // -bootclasspath
 )
+
+var bindSonameRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
+func validBindSoname(s string) bool {
+	return bindSonameRE.MatchString(s)
+}
+
+func deriveBindSoname(javaPkg string) string {
+	return "gojni_" + strings.ReplaceAll(javaPkg, ".", "_")
+}
 
 func init() {
 	// bind command specific commands.
 	cmdBind.flag.StringVar(&bindJavaPkg, "javapkg", "",
 		"specifies custom Java package path prefix. Valid only with -target=android.")
+	cmdBind.flag.StringVar(&bindSoname, "soname", "gojni",
+		"name for the output shared library; produces lib<soname>.so and\n"+
+			"namespaces all generated JNI symbols and runtime support classes.\n"+
+			"If omitted with -javapkg, the name is derived as gojni_<javapkg with dots replaced by underscores>.\n"+
+			"Must match [a-zA-Z][a-zA-Z0-9_]*")
 	cmdBind.flag.StringVar(&bindPrefix, "prefix", "",
 		"custom Objective-C name prefix. Valid only with -target=ios.")
 	cmdBind.flag.StringVar(&bindClasspath, "classpath", "", "The classpath for imported Java classes. Valid only with -target=android.")

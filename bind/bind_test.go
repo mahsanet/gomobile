@@ -400,6 +400,53 @@ func TestGenJava(t *testing.T) {
 	}
 }
 
+func TestGenJavaSonameSeqPackage(t *testing.T) {
+	const datafile = "testdata/vars.go"
+	pkg, file := typeCheck(t, datafile, "")
+	var buf bytes.Buffer
+	g := &JavaGen{
+		SeqPkg: "go.gojni_test",
+		Soname: "gojni_test",
+		Generator: &Generator{
+			Printer: &Printer{Buf: &buf, IndentEach: []byte("    ")},
+			Fset:    fset,
+			AllPkg:  []*types.Package{pkg},
+			Files:   []*ast.File{file},
+			Pkg:     pkg,
+		},
+	}
+	g.Init(nil)
+	if err := g.GenJava(); err != nil {
+		t.Fatal(err)
+	}
+	javaSrc := buf.String()
+	if !strings.Contains(javaSrc, "import go.gojni_test.Seq;") {
+		t.Fatalf("generated Java does not import scoped Seq package:\n%s", javaSrc)
+	}
+	if strings.Contains(javaSrc, "go.Seq") {
+		t.Fatalf("generated Java contains unscoped go.Seq reference:\n%s", javaSrc)
+	}
+
+	buf.Reset()
+	ug := &JavaGen{
+		SeqPkg: "go.gojni_test",
+		Soname: "gojni_test",
+		Generator: &Generator{
+			Printer: &Printer{Buf: &buf, IndentEach: []byte("    ")},
+			Fset:    fset,
+			AllPkg:  []*types.Package{pkg},
+		},
+	}
+	ug.Init(nil)
+	if err := ug.GenC(); err != nil {
+		t.Fatal(err)
+	}
+	cSrc := buf.String()
+	if !strings.Contains(cSrc, "Java_go_gojni_1test_Universe__1init") {
+		t.Fatalf("generated JNI did not use scoped universe class name:\n%s", cSrc)
+	}
+}
+
 func TestGenGo(t *testing.T) {
 	for _, filename := range tests {
 		var buf bytes.Buffer

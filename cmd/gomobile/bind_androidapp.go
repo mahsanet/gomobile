@@ -37,6 +37,9 @@ func goAndroidBind(gobind string, pkgs []*packages.Package, targets []targetInfo
 	if bindJavaPkg != "" {
 		cmd.Args = append(cmd.Args, "-javapkg="+bindJavaPkg)
 	}
+	if bindSoname != "gojni" || bindJavaPkg != "" {
+		cmd.Args = append(cmd.Args, "-soname="+bindSoname)
+	}
 	if bindClasspath != "" {
 		cmd.Args = append(cmd.Args, "-classpath="+bindClasspath)
 	}
@@ -99,7 +102,7 @@ func buildSrcJar(src string) error {
 //	AndroidManifest.xml (mandatory)
 //	classes.jar (mandatory)
 //	assets/ (optional)
-//	jni/<abi>/libgojni.so
+//	jni/<abi>/lib<soname>.so
 //	R.txt (mandatory)
 //	res/ (mandatory)
 //	libs/*.jar (optional, not relevant)
@@ -212,7 +215,7 @@ func buildAAR(srcDir, androidDir string, pkgs []*packages.Package, targets []tar
 
 	for _, t := range targets {
 		toolchain := ndk.Toolchain(t.arch)
-		lib := toolchain.abi + "/libgojni.so"
+		lib := toolchain.abi + "/lib" + bindSoname + ".so"
 		w, err = aarwcreate("jni/" + lib)
 		if err != nil {
 			return err
@@ -346,7 +349,7 @@ func writeJar(w io.Writer, dir string) error {
 	return jarw.Close()
 }
 
-// buildAndroidSO generates an Android libgojni.so file to outputDir.
+// buildAndroidSO generates an Android lib<soname>.so file to outputDir.
 // buildAndroidSO is concurrent-safe.
 func buildAndroidSO(outputDir string, arch string) error {
 	// Copy the environment variables to make this function concurrent-safe.
@@ -356,6 +359,10 @@ func buildAndroidSO(outputDir string, arch string) error {
 	// Add the generated packages to GOPATH for reverse bindings.
 	gopath := fmt.Sprintf("GOPATH=%s%c%s", tmpdir, filepath.ListSeparator, goEnv("GOPATH"))
 	env = append(env, gopath)
+	if bindSoname != "gojni" {
+		env = appendEnvFlag(env, "CGO_CFLAGS", "-DGOJNI_SONAME="+bindSoname)
+		env = appendEnvFlag(env, "CGO_LDFLAGS", "-Wl,-soname,lib"+bindSoname+".so")
+	}
 
 	modulesUsed, err := areGoModulesUsed()
 	if err != nil {
@@ -391,10 +398,21 @@ func buildAndroidSO(outputDir string, arch string) error {
 		"./gobind",
 		env,
 		"-buildmode=c-shared",
-		"-o="+filepath.Join(outputDir, "src", "main", "jniLibs", toolchain.abi, "libgojni.so"),
+		"-o="+filepath.Join(outputDir, "src", "main", "jniLibs", toolchain.abi, "lib"+bindSoname+".so"),
 	); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func appendEnvFlag(env []string, key, val string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = e + " " + val
+			return env
+		}
+	}
+	return append(env, prefix+val)
 }
