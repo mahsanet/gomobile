@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -73,6 +74,9 @@ see 'go help build'.
 }
 
 func runBind(cmd *command) error {
+	bindGOPATH = ""
+	bindModuleDir = ""
+	bindMobileDir = mobileSourceDir()
 	cleanup, err := buildEnvInit()
 	if err != nil {
 		return err
@@ -134,6 +138,23 @@ func runBind(cmd *command) error {
 	if err != nil {
 		return err
 	}
+	for _, pkg := range pkgs {
+		if pkg.Name == "" && len(pkg.Errors) > 0 {
+			if err := setupExternalBindGOPATH(args); err != nil {
+				return fmt.Errorf("%v", pkg.Errors)
+			}
+			pkgs, err = packages.Load(packagesConfig(targets[0]), args...)
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
+	for _, pkg := range pkgs {
+		if pkg.Name == "" && len(pkg.Errors) > 0 {
+			return fmt.Errorf("%v", pkg.Errors)
+		}
+	}
 
 	// check if any of the package is main
 	for _, pkg := range pkgs {
@@ -161,6 +182,9 @@ var (
 	bindSoname        string // -soname
 	bindClasspath     string // -classpath
 	bindBootClasspath string // -bootclasspath
+	bindGOPATH        string
+	bindModuleDir     string
+	bindMobileDir     string
 )
 
 var bindSonameRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
@@ -248,14 +272,207 @@ func writeFile(filename string, generate func(io.Writer) error) error {
 
 func packagesConfig(t targetInfo) *packages.Config {
 	config := &packages.Config{}
+	config.Dir = bindModuleDir
 	// Add CGO_ENABLED=1 explicitly since Cgo is disabled when GOOS is different from host OS.
 	config.Env = append(os.Environ(), "GOARCH="+t.arch, "GOOS="+platformOS(t.platform), "CGO_ENABLED=1")
+	config.Env = append(config.Env, bindEnv()...)
 	tags := append(buildTags[:], platformTags(t.platform)...)
 
 	if len(tags) > 0 {
 		config.BuildFlags = []string{"-tags=" + strings.Join(tags, ",")}
 	}
+	if bindModuleDir != "" {
+		config.BuildFlags = append(config.BuildFlags, "-mod=mod")
+	}
 	return config
+}
+
+func bindEnv() []string {
+	if bindGOPATH == "" {
+		return nil
+	}
+	return []string{
+		"GO111MODULE=off",
+		"GOPATH=" + bindGOPATH + string(filepath.ListSeparator) + goEnv("GOPATH"),
+	}
+}
+
+func setupExternalBindGOPATH(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("no packages")
+	}
+	gopath := filepath.Join(tmpdir, "bind-gopath")
+	for _, arg := range args {
+		if !isRemoteImportPath(arg) {
+			return fmt.Errorf("package %q is not a remote import path", arg)
+		}
+		mod, err := moduleForImportPath(arg)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(mod.Dir, "go.mod")); err == nil {
+			bindModuleDir = mod.Dir
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := symlinkGOPATHPackage(gopath, mod.Path, mod.Dir); err != nil {
+			return err
+		}
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if err := symlinkGOPATHPackage(gopath, mobileModulePath(), wd); err != nil {
+		return err
+	}
+	bindGOPATH = gopath
+	return nil
+}
+
+func isRemoteImportPath(path string) bool {
+	if path == "" || strings.HasPrefix(path, ".") || filepath.IsAbs(path) {
+		return false
+	}
+	first, _, _ := strings.Cut(path, "/")
+	return strings.Contains(first, ".")
+}
+
+type moduleJSON struct {
+	Path    string
+	Version string
+	Dir     string
+	Origin  *moduleOrigin
+}
+
+type moduleOrigin struct {
+	URL  string
+	Hash string
+}
+
+func moduleForImportPath(path string) (*moduleJSON, error) {
+	parts := strings.Split(path, "/")
+	for n := len(parts); n > 0; n-- {
+		modPath := strings.Join(parts[:n], "/")
+		for _, query := range []string{"master", "main", "latest"} {
+			mod, err := queryModule(modPath, query)
+			if err == nil {
+				return mod, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("cannot resolve module for package %q", path)
+}
+
+func queryModule(path, query string) (*moduleJSON, error) {
+	cmd := exec.Command("go", "list", "-m", "-json", path+"@"+query)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var mod moduleJSON
+	if err := json.Unmarshal(out, &mod); err != nil {
+		return nil, err
+	}
+	if mod.Path == "" {
+		return nil, fmt.Errorf("module path is empty")
+	}
+	if mod.Origin != nil && mod.Origin.URL != "" && mod.Origin.Hash != "" && query != "latest" {
+		if dir, err := cloneModuleSource(mod.Path, mod.Origin.URL, mod.Origin.Hash); err == nil {
+			mod.Dir = dir
+			return &mod, nil
+		}
+	}
+	if mod.Dir == "" {
+		mod, err = downloadModule(mod.Path, mod.Version)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if mod.Dir == "" {
+		return nil, fmt.Errorf("module dir is empty")
+	}
+	return &mod, nil
+}
+
+func cloneModuleSource(path, url, hash string) (string, error) {
+	dir := filepath.Join(tmpdir, "bind-module", filepath.FromSlash(path))
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return dir, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := mkdir(filepath.Dir(dir)); err != nil {
+		return "", err
+	}
+	cmd := exec.Command("git", "clone", "--recursive", url, dir)
+	if err := runCmd(cmd); err != nil {
+		return "", err
+	}
+	cmd = exec.Command("git", "checkout", hash)
+	cmd.Dir = dir
+	if err := runCmd(cmd); err != nil {
+		return "", err
+	}
+	cmd = exec.Command("git", "submodule", "update", "--init", "--recursive")
+	cmd.Dir = dir
+	if err := runCmd(cmd); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func downloadModule(path, version string) (moduleJSON, error) {
+	var mod moduleJSON
+	if version == "" {
+		return mod, fmt.Errorf("module version is empty")
+	}
+	cmd := exec.Command("go", "mod", "download", "-json", path+"@"+version)
+	out, err := cmd.Output()
+	if err != nil {
+		return mod, err
+	}
+	if err := json.Unmarshal(out, &mod); err != nil {
+		return mod, err
+	}
+	return mod, nil
+}
+
+func symlinkGOPATHPackage(gopath, importPath, dir string) error {
+	dst := filepath.Join(gopath, "src", filepath.FromSlash(importPath))
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := mkdir(filepath.Dir(dst)); err != nil {
+		return err
+	}
+	return symlink(dir, dst)
+}
+
+func mobileModulePath() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "golang.org/x/mobile"
+	}
+	path := info.Main.Path
+	if strings.HasSuffix(path, "/cmd/gomobile") {
+		return strings.TrimSuffix(path, "/cmd/gomobile")
+	}
+	return "golang.org/x/mobile"
+}
+
+func mobileSourceDir() string {
+	out, err := exec.Command("go", "env", "GOMOD").Output()
+	if err == nil {
+		if gomod := strings.TrimSpace(string(out)); gomod != "" {
+			return filepath.Dir(gomod)
+		}
+	}
+	wd, _ := os.Getwd()
+	return wd
 }
 
 // getModuleVersions returns a module information at the directory src.
@@ -267,6 +484,9 @@ func getModuleVersions(targetPlatform string, targetArch string, src string) (*m
 
 	// TODO(hyangah): probably we don't need to add all the dependencies.
 	cmd.Args = append(cmd.Args, "-m", "-json", "-tags="+strings.Join(tags, ","), "all")
+	if bindModuleDir != "" {
+		cmd.Args = append(cmd.Args[:len(cmd.Args)-1], "-mod=mod", cmd.Args[len(cmd.Args)-1])
+	}
 	cmd.Dir = src
 
 	output, err := cmd.Output()
@@ -333,6 +553,11 @@ func getModuleVersions(targetPlatform string, targetArch string, src string) (*m
 	if err := f.AddGoStmt(strings.TrimPrefix(v, "go")); err != nil {
 		return nil, err
 	}
+	if bindMobileDir != "" && src != bindMobileDir {
+		if err := f.AddReplace(mobileModulePath(), "", bindMobileDir, ""); err != nil {
+			return nil, err
+		}
+	}
 
 	return f, nil
 }
@@ -349,7 +574,11 @@ func writeGoMod(dir, targetPlatform, targetArch string) error {
 	}
 
 	return writeFile(filepath.Join(dir, "go.mod"), func(w io.Writer) error {
-		f, err := getModuleVersions(targetPlatform, targetArch, ".")
+		src := "."
+		if bindModuleDir != "" {
+			src = bindModuleDir
+		}
+		f, err := getModuleVersions(targetPlatform, targetArch, src)
 		if err != nil {
 			return err
 		}
@@ -376,6 +605,12 @@ var (
 )
 
 func areGoModulesUsed() (bool, error) {
+	if bindGOPATH != "" {
+		return false, nil
+	}
+	if bindModuleDir != "" {
+		return true, nil
+	}
 	areGoModulesUsedOnce.Do(func() {
 		out, err := exec.Command("go", "env", "GOMOD").Output()
 		if err != nil {

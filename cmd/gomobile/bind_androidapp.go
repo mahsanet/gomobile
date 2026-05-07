@@ -31,6 +31,14 @@ func goAndroidBind(gobind string, pkgs []*packages.Package, targets []targetInfo
 	)
 	cmd.Env = append(cmd.Env, "GOOS=android")
 	cmd.Env = append(cmd.Env, "CGO_ENABLED=1")
+	cmd.Env = append(cmd.Env, bindEnv()...)
+	if bindModuleDir != "" && bindMobileDir != "" {
+		cmd.Env = append(cmd.Env, "GOMOBILE_SRCDIR="+bindMobileDir)
+	}
+	if bindModuleDir != "" {
+		cmd.Env = append(cmd.Env, "GOFLAGS=-mod=mod")
+	}
+	cmd.Dir = bindModuleDir
 	if len(buildTags) > 0 {
 		cmd.Args = append(cmd.Args, "-tags="+strings.Join(buildTags, ","))
 	}
@@ -355,9 +363,17 @@ func buildAndroidSO(outputDir string, arch string) error {
 	// Copy the environment variables to make this function concurrent-safe.
 	env := make([]string, len(androidEnv[arch]))
 	copy(env, androidEnv[arch])
+	if bindGOPATH != "" {
+		env = append(env, "GO111MODULE=off")
+	}
 
 	// Add the generated packages to GOPATH for reverse bindings.
-	gopath := fmt.Sprintf("GOPATH=%s%c%s", tmpdir, filepath.ListSeparator, goEnv("GOPATH"))
+	gopaths := []string{tmpdir}
+	if bindGOPATH != "" {
+		gopaths = append(gopaths, bindGOPATH)
+	}
+	gopaths = append(gopaths, goEnv("GOPATH"))
+	gopath := "GOPATH=" + strings.Join(gopaths, string(filepath.ListSeparator))
 	env = append(env, gopath)
 	if bindSoname != "gojni" {
 		env = appendEnvFlag(env, "CGO_CFLAGS", "-DGOJNI_SONAME="+bindSoname)

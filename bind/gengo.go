@@ -13,6 +13,7 @@ import (
 
 type goGen struct {
 	*Generator
+	mobilePkgPath string
 
 	// imports is the list of imports, in the form
 	// "the/package/path"
@@ -504,7 +505,7 @@ func (g *goGen) genPreamble() {
 	g.Printf(goPreamble, pkgName, pkgPath)
 	g.Printf("import (\n")
 	g.Indent()
-	g.Printf("_seq \"golang.org/x/mobile/bind/seq\"\n")
+	g.Printf("_seq %q\n", g.mobilePkgPath+"/bind/seq")
 	for _, imp := range g.imports {
 		g.Printf("%s\n", imp)
 	}

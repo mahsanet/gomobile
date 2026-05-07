@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"text/template"
 	"unicode"
@@ -25,12 +26,15 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+const defaultMobilePkgPath = "golang.org/x/mobile"
+
 func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types.Package, classes []*java.Class, otypes []*objc.Named) {
 	fname := defaultFileName(lang, p)
 	conf := &bind.GeneratorConfig{
-		Fset:   fset,
-		Pkg:    p,
-		AllPkg: allPkg,
+		Fset:          fset,
+		Pkg:           p,
+		AllPkg:        allPkg,
+		MobilePkgPath: mobilePkgPath(),
 	}
 	var pname string
 	if p != nil {
@@ -85,12 +89,12 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 		closer()
 		// Generate support files along with the universe package
 		if p == nil {
-			dir, err := packageDir("golang.org/x/mobile/bind")
+			dir, err := packageDir(conf.MobilePkgPath + "/bind")
 			if err != nil {
-				errorf(`"golang.org/x/mobile/bind" is not found; run go get golang.org/x/mobile/bind: %v`, err)
+				errorf(`%q is not found; run go get %s/bind: %v`, conf.MobilePkgPath+"/bind", conf.MobilePkgPath, err)
 				return
 			}
-			repo := filepath.Clean(filepath.Join(dir, "..")) // golang.org/x/mobile directory.
+			repo := filepath.Clean(filepath.Join(dir, "..")) // mobile module directory.
 			for _, javaFile := range []string{"Seq.java"} {
 				src := filepath.Join(repo, "bind/java/"+javaFile)
 				w, closer := writer(filepath.Join("java", filepath.FromSlash(strings.ReplaceAll(seqPkgName(), ".", "/")), javaFile))
@@ -106,13 +110,13 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 				errorf("unable to import bind/java: %v", err)
 				return
 			}
-			javaDir, err := packageDir("golang.org/x/mobile/bind/java")
+			javaDir, err := packageDir(conf.MobilePkgPath + "/bind/java")
 			if err != nil {
 				errorf("unable to import bind/java: %v", err)
 				return
 			}
 			renderFile(filepath.Join("src", "gobind", "seq_android.c"), filepath.Join(javaDir, "seq_android.c.support"), supportTemplateData())
-			copyFile(filepath.Join("src", "gobind", "seq_android.go"), filepath.Join(javaDir, "seq_android.go.support"))
+			renderFile(filepath.Join("src", "gobind", "seq_android.go"), filepath.Join(javaDir, "seq_android.go.support"), supportTemplateData())
 			renderFile(filepath.Join("src", "gobind", "seq_android.h"), filepath.Join(javaDir, "seq_android.h"), supportTemplateData())
 		}
 	case "go":
@@ -128,12 +132,12 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 		genPkgH(w, "seq")
 		io.Copy(w, &buf)
 		closer()
-		dir, err := packageDir("golang.org/x/mobile/bind")
+		dir, err := packageDir(conf.MobilePkgPath + "/bind")
 		if err != nil {
 			errorf("unable to import bind: %v", err)
 			return
 		}
-		copyFile(filepath.Join("src", "gobind", "seq.go"), filepath.Join(dir, "seq.go.support"))
+		renderFile(filepath.Join("src", "gobind", "seq.go"), filepath.Join(dir, "seq.go.support"), supportTemplateData())
 	case "objc":
 		g := &bind.ObjcGen{
 			Generator: generator,
@@ -157,7 +161,7 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 		closer()
 		if p == nil {
 			// Copy support files
-			dir, err := packageDir("golang.org/x/mobile/bind/objc")
+			dir, err := packageDir(conf.MobilePkgPath + "/bind/objc")
 			if err != nil {
 				errorf("unable to import bind/objc: %v", err)
 				return
@@ -173,6 +177,7 @@ func genPkg(lang string, p *types.Package, astFiles []*ast.File, allPkg []*types
 }
 
 type supportData struct {
+	MobilePkg   string
 	SeqPkg      string
 	SeqPkgSlash string
 	SeqPkgJNI   string
@@ -192,11 +197,24 @@ func seqPkgName() string {
 func supportTemplateData() supportData {
 	seqPkg := seqPkgName()
 	return supportData{
+		MobilePkg:   mobilePkgPath(),
 		SeqPkg:      seqPkg,
 		SeqPkgSlash: strings.ReplaceAll(seqPkg, ".", "/"),
 		SeqPkgJNI:   strings.ReplaceAll(java.JNIMangle(seqPkg), ".", "_"),
 		Soname:      *soname,
 	}
+}
+
+func mobilePkgPath() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return defaultMobilePkgPath
+	}
+	path := info.Main.Path
+	if strings.HasSuffix(path, "/cmd/gobind") {
+		return strings.TrimSuffix(path, "/cmd/gobind")
+	}
+	return defaultMobilePkgPath
 }
 
 func renderFile(dst, src string, data supportData) {
@@ -420,6 +438,15 @@ func defaultFileName(lang string, pkg *types.Package) string {
 }
 
 func packageDir(path string) (string, error) {
+	if mobileSrc := os.Getenv("GOMOBILE_SRCDIR"); mobileSrc != "" {
+		mobilePkg := mobilePkgPath()
+		if path == mobilePkg {
+			return mobileSrc, nil
+		}
+		if strings.HasPrefix(path, mobilePkg+"/") {
+			return filepath.Join(mobileSrc, filepath.FromSlash(strings.TrimPrefix(path, mobilePkg+"/"))), nil
+		}
+	}
 	mode := packages.NeedFiles
 	pkgs, err := packages.Load(&packages.Config{Mode: mode}, path)
 	if err != nil {
