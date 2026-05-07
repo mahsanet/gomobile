@@ -32,9 +32,6 @@ func goAndroidBind(gobind string, pkgs []*packages.Package, targets []targetInfo
 	cmd.Env = append(cmd.Env, "GOOS=android")
 	cmd.Env = append(cmd.Env, "CGO_ENABLED=1")
 	cmd.Env = append(cmd.Env, bindEnv()...)
-	if bindModuleDir != "" && bindMobileDir != "" {
-		cmd.Env = append(cmd.Env, "GOMOBILE_SRCDIR="+bindMobileDir)
-	}
 	if bindModuleDir != "" {
 		cmd.Env = append(cmd.Env, "GOFLAGS=-mod=mod")
 	}

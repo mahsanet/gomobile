@@ -76,7 +76,6 @@ see 'go help build'.
 func runBind(cmd *command) error {
 	bindGOPATH = ""
 	bindModuleDir = ""
-	bindMobileDir = mobileSourceDir()
 	cleanup, err := buildEnvInit()
 	if err != nil {
 		return err
@@ -184,7 +183,6 @@ var (
 	bindBootClasspath string // -bootclasspath
 	bindGOPATH        string
 	bindModuleDir     string
-	bindMobileDir     string
 )
 
 var bindSonameRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
@@ -464,40 +462,6 @@ func mobileModulePath() string {
 	return "golang.org/x/mobile"
 }
 
-func mobileSourceDir() string {
-	if dir := os.Getenv("GOMOBILE_SRCDIR"); dir != "" {
-		return dir
-	}
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		return ""
-	}
-	gomod := strings.TrimSpace(string(out))
-	if gomod == "" {
-		return ""
-	}
-	dir := filepath.Dir(gomod)
-	if modulePath, err := modulePathAt(dir); err == nil && modulePath == mobileModulePath() {
-		return dir
-	}
-	return ""
-}
-
-func modulePathAt(dir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return "", err
-	}
-	file, err := modfile.Parse("go.mod", data, nil)
-	if err != nil {
-		return "", err
-	}
-	if file.Module == nil {
-		return "", nil
-	}
-	return file.Module.Mod.Path, nil
-}
-
 // getModuleVersions returns a module information at the directory src.
 func getModuleVersions(targetPlatform string, targetArch string, src string) (*modfile.File, error) {
 	cmd := exec.Command("go", "list")
@@ -573,12 +537,6 @@ func getModuleVersions(targetPlatform string, targetArch string, src string) (*m
 	if err := f.AddGoStmt(strings.TrimPrefix(v, "go")); err != nil {
 		return nil, err
 	}
-	if bindMobileDir != "" && src != bindMobileDir {
-		if err := f.AddReplace(mobileModulePath(), "", bindMobileDir, ""); err != nil {
-			return nil, err
-		}
-	}
-
 	return f, nil
 }
 
