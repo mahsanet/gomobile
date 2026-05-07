@@ -469,13 +469,33 @@ func mobileSourceDir() string {
 		return dir
 	}
 	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err == nil {
-		if gomod := strings.TrimSpace(string(out)); gomod != "" {
-			return filepath.Dir(gomod)
-		}
+	if err != nil {
+		return ""
 	}
-	wd, _ := os.Getwd()
-	return wd
+	gomod := strings.TrimSpace(string(out))
+	if gomod == "" {
+		return ""
+	}
+	dir := filepath.Dir(gomod)
+	if modulePath, err := modulePathAt(dir); err == nil && modulePath == mobileModulePath() {
+		return dir
+	}
+	return ""
+}
+
+func modulePathAt(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	file, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", err
+	}
+	if file.Module == nil {
+		return "", nil
+	}
+	return file.Module.Mod.Path, nil
 }
 
 // getModuleVersions returns a module information at the directory src.
