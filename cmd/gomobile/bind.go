@@ -465,6 +465,9 @@ func mobileModulePath() string {
 }
 
 func mobileSourceDir() string {
+	if dir := os.Getenv("GOMOBILE_SRCDIR"); dir != "" {
+		return dir
+	}
 	out, err := exec.Command("go", "env", "GOMOD").Output()
 	if err == nil {
 		if gomod := strings.TrimSpace(string(out)); gomod != "" {
@@ -483,10 +486,7 @@ func getModuleVersions(targetPlatform string, targetArch string, src string) (*m
 	tags := append(buildTags[:], platformTags(targetPlatform)...)
 
 	// TODO(hyangah): probably we don't need to add all the dependencies.
-	cmd.Args = append(cmd.Args, "-m", "-json", "-tags="+strings.Join(tags, ","), "all")
-	if bindModuleDir != "" {
-		cmd.Args = append(cmd.Args[:len(cmd.Args)-1], "-mod=mod", cmd.Args[len(cmd.Args)-1])
-	}
+	cmd.Args = append(cmd.Args, "-m", "-json", "-tags="+strings.Join(tags, ","), "-mod=mod", "all")
 	cmd.Dir = src
 
 	output, err := cmd.Output()
