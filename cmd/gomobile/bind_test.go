@@ -229,23 +229,18 @@ GOOS=ios CGO_ENABLED=1 gobind -lang=go,objc -outdir=$WORK/ios -tags=ios{{if .Pre
 mkdir -p $WORK/ios/src-arm64
 PWD=$WORK/ios/src-arm64 GOMODCACHE=$GOPATH/pkg/mod GOOS=ios GOARCH=arm64 GOFLAGS=-tags=ios CC=iphoneos-clang CXX=iphoneos-clang++ CGO_CFLAGS=-isysroot iphoneos -miphoneos-version-min=13.0 -fembed-bitcode -arch arm64 CGO_CXXFLAGS=-isysroot iphoneos -miphoneos-version-min=13.0 -fembed-bitcode -arch arm64 CGO_LDFLAGS=-isysroot iphoneos -miphoneos-version-min=13.0 -fembed-bitcode -arch arm64 CGO_ENABLED=1 DARWIN_SDK=iphoneos GOPATH=$WORK/ios:$GOPATH go mod tidy
 PWD=$WORK/ios/src-arm64 GOMODCACHE=$GOPATH/pkg/mod GOOS=ios GOARCH=arm64 GOFLAGS=-tags=ios CC=iphoneos-clang CXX=iphoneos-clang++ CGO_CFLAGS=-isysroot iphoneos -miphoneos-version-min=13.0 -fembed-bitcode -arch arm64 CGO_CXXFLAGS=-isysroot iphoneos -miphoneos-version-min=13.0 -fembed-bitcode -arch arm64 CGO_LDFLAGS=-isysroot iphoneos -miphoneos-version-min=13.0 -fembed-bitcode -arch arm64 CGO_ENABLED=1 DARWIN_SDK=iphoneos GOPATH=$WORK/ios:$GOPATH go build -x -buildmode=c-archive -o $WORK/{{.Output}}-ios-arm64.a ./gobind
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers
-ln -s A $WORK/ios/iphoneos/{{.Output}}.framework/Versions/Current
-ln -s Versions/Current/Headers $WORK/ios/iphoneos/{{.Output}}.framework/Headers
-ln -s Versions/Current/{{.Output}} $WORK/ios/iphoneos/{{.Output}}.framework/{{.Output}}
-xcrun lipo $WORK/{{.Output}}-ios-arm64.a -create -o $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/{{.Output}}
-cp $WORK/ios/src/gobind/{{.Prefix}}Asset.objc.h $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers/{{.Prefix}}Asset.objc.h
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers
-cp $WORK/ios/src/gobind/Universe.objc.h $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers/Universe.objc.h
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers
-cp $WORK/ios/src/gobind/ref.h $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers/ref.h
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Headers
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Resources
-ln -s Versions/Current/Resources $WORK/ios/iphoneos/{{.Output}}.framework/Resources
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Resources
-mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Versions/A/Modules
-ln -s Versions/Current/Modules $WORK/ios/iphoneos/{{.Output}}.framework/Modules
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Headers
+xcrun lipo $WORK/{{.Output}}-ios-arm64.a -create -o $WORK/ios/iphoneos/{{.Output}}.framework/{{.Output}}
+cp $WORK/ios/src/gobind/{{.Prefix}}Asset.objc.h $WORK/ios/iphoneos/{{.Output}}.framework/Headers/{{.Prefix}}Asset.objc.h
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Headers
+cp $WORK/ios/src/gobind/Universe.objc.h $WORK/ios/iphoneos/{{.Output}}.framework/Headers/Universe.objc.h
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Headers
+cp $WORK/ios/src/gobind/ref.h $WORK/ios/iphoneos/{{.Output}}.framework/Headers/ref.h
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Headers
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Headers
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework
+mkdir -p $WORK/ios/iphoneos/{{.Output}}.framework/Modules
 xcodebuild -create-xcframework -framework $WORK/ios/iphoneos/{{.Output}}.framework -output {{.Output}}.xcframework
 `))
 

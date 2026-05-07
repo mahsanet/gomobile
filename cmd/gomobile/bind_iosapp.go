@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -17,11 +18,12 @@ import (
 	"text/template"
 	"time"
 
+	"golang.org/x/mobile/internal/gobind"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/packages"
 )
 
-func goAppleBind(gobind string, pkgs []*packages.Package, targets []targetInfo) error {
+func goAppleBind(pkgs []*packages.Package, targets []targetInfo) error {
 	var name string
 	var title string
 
@@ -47,7 +49,7 @@ func goAppleBind(gobind string, pkgs []*packages.Package, targets []targetInfo) 
 		outDirsForPlatform[t.platform] = filepath.Join(tmpdir, t.platform)
 	}
 
-	// Run the gobind command for each platform
+	// Run gobind for each platform to generate the bindings.
 	var gobindWG errgroup.Group
 	for platform, outDir := range outDirsForPlatform {
 		platform := platform
@@ -58,29 +60,30 @@ func goAppleBind(gobind string, pkgs []*packages.Package, targets []targetInfo) 
 			if platform == "maccatalyst" && v < 13.0 {
 				return errors.New("catalyst requires -iosversion=13 or higher")
 			}
-
-			// Run gobind once per platform to generate the bindings
-			cmd := exec.Command(
-				gobind,
-				"-lang=go,objc",
-				"-outdir="+outDir,
-			)
-			cmd.Env = append(cmd.Env, "GOOS="+platformOS(platform))
-			cmd.Env = append(cmd.Env, "CGO_ENABLED=1")
-			cmd.Env = append(cmd.Env, bindEnv()...)
-			if bindModuleDir != "" {
-				cmd.Env = append(cmd.Env, "GOFLAGS=-mod=mod")
+			cfg := gobind.Config{
+				Langs:  []string{"go", "objc"},
+				OutDir: outDir,
+				Env:    []string{"GOOS=" + platformOS(platform), "CGO_ENABLED=1"},
+				Dir:    bindModuleDir,
+				Soname: bindSoname,
+				Prefix: bindPrefix,
 			}
-			cmd.Dir = bindModuleDir
+			cfg.Env = append(cfg.Env, bindEnv()...)
+			displayArgs := []string{"-lang=go,objc", "-outdir=" + outDir}
+			if bindModuleDir != "" {
+				cfg.Env = append(cfg.Env, "GOFLAGS=-mod=mod")
+			}
 			tags := append(buildTags[:], platformTags(platform)...)
-			cmd.Args = append(cmd.Args, "-tags="+strings.Join(tags, ","))
+			cfg.Tags = append(cfg.Tags, tags...)
+			displayArgs = append(displayArgs, "-tags="+strings.Join(tags, ","))
 			if bindPrefix != "" {
-				cmd.Args = append(cmd.Args, "-prefix="+bindPrefix)
+				displayArgs = append(displayArgs, "-prefix="+bindPrefix)
 			}
 			for _, p := range pkgs {
-				cmd.Args = append(cmd.Args, p.PkgPath)
+				cfg.Args = append(cfg.Args, p.PkgPath)
+				displayArgs = append(displayArgs, p.PkgPath)
 			}
-			if err := runCmd(cmd); err != nil {
+			if err := runGobind(cfg, displayArgs); err != nil {
 				return err
 			}
 			return nil
@@ -290,6 +293,11 @@ func goAppleBind(gobind string, pkgs []*packages.Package, targets []targetInfo) 
 	xcframeworkArgs := []string{"-create-xcframework"}
 
 	for _, dir := range frameworkDirs {
+		if buildN {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+		}
 		// On macOS, a temporary directory starts with /var, which is a symbolic link to /private/var.
 		// And in gomobile, a temporary directory is usually used as a working directly.
 		// Unfortunately, xcodebuild in Xcode 15 seems to have a bug and might not be able to understand fullpaths with symbolic links.

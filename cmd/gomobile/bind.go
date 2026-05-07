@@ -7,7 +7,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/mobile/internal/gobind"
 	"golang.org/x/mobile/internal/sdkpath"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
@@ -114,16 +114,6 @@ func runBind(cmd *command) error {
 		}
 	}
 
-	var gobind string
-	if !buildN {
-		gobind, err = exec.LookPath("gobind")
-		if err != nil {
-			return errors.New("gobind was not found. Please run gomobile init before trying again")
-		}
-	} else {
-		gobind = "gobind"
-	}
-
 	if len(args) == 0 {
 		args = append(args, ".")
 	}
@@ -164,12 +154,12 @@ func runBind(cmd *command) error {
 
 	switch {
 	case isAndroidPlatform(targets[0].platform):
-		return goAndroidBind(gobind, pkgs, targets)
+		return goAndroidBind(pkgs, targets)
 	case isApplePlatform(targets[0].platform):
 		if !xcodeAvailable() {
 			return fmt.Errorf("-target=%q requires Xcode", buildTarget)
 		}
-		return goAppleBind(gobind, pkgs, targets)
+		return goAppleBind(pkgs, targets)
 	default:
 		return fmt.Errorf(`invalid -target=%q`, buildTarget)
 	}
@@ -219,6 +209,71 @@ func bootClasspath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(apiPath, "android.jar"), nil
+}
+
+func runGobind(cfg gobind.Config, displayArgs []string) error {
+	if buildX || buildN {
+		dir := ""
+		if cfg.Dir != "" {
+			dir = "PWD=" + cfg.Dir + " "
+		}
+		env := strings.Join(cfg.Env, " ")
+		if env != "" {
+			env += " "
+		}
+		printcmd("%s%sgobind %s", dir, env, strings.Join(displayArgs, " "))
+	}
+	if buildN {
+		if cfg.OutDir != "" {
+			return writeGobindDryRunFiles(cfg)
+		}
+		return nil
+	}
+	cfg.MobilePkgPath = mobileModulePath()
+	cfg.Stdout = os.Stdout
+	cfg.Stderr = os.Stderr
+	return gobind.Run(cfg)
+}
+
+func writeGobindDryRunFiles(cfg gobind.Config) error {
+	for _, lang := range cfg.Langs {
+		switch lang {
+		case "objc":
+			for _, arg := range cfg.Args {
+				name := filepath.Base(arg)
+				if name == "." || name == string(filepath.Separator) {
+					name = ""
+				}
+				if name == "" {
+					continue
+				}
+				title := cfg.Prefix + strings.Title(name)
+				if err := writeGobindDryRunFile(cfg.OutDir, filepath.Join("src", "gobind", title+".objc.h")); err != nil {
+					return err
+				}
+			}
+			if err := writeGobindDryRunFile(cfg.OutDir, filepath.Join("src", "gobind", "Universe.objc.h")); err != nil {
+				return err
+			}
+			if err := writeGobindDryRunFile(cfg.OutDir, filepath.Join("src", "gobind", "ref.h")); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeGobindDryRunFile(outDir, name string) error {
+	path := filepath.Join(outDir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, nil, 0644)
 }
 
 func copyFile(dst, src string) error {

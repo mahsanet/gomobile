@@ -13,48 +13,54 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/mobile/internal/gobind"
 	"golang.org/x/mobile/internal/sdkpath"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/packages"
 )
 
-func goAndroidBind(gobind string, pkgs []*packages.Package, targets []targetInfo) error {
+func goAndroidBind(pkgs []*packages.Package, targets []targetInfo) error {
 	if _, err := sdkpath.AndroidHome(); err != nil {
 		return fmt.Errorf("this command requires the Android SDK to be installed: %w", err)
 	}
 
-	// Run gobind to generate the bindings
-	cmd := exec.Command(
-		gobind,
-		"-lang=go,java",
-		"-outdir="+tmpdir,
-	)
-	cmd.Env = append(cmd.Env, "GOOS=android")
-	cmd.Env = append(cmd.Env, "CGO_ENABLED=1")
-	cmd.Env = append(cmd.Env, bindEnv()...)
-	if bindModuleDir != "" {
-		cmd.Env = append(cmd.Env, "GOFLAGS=-mod=mod")
+	// Run gobind to generate the bindings.
+	cfg := gobind.Config{
+		Langs:  []string{"go", "java"},
+		OutDir: tmpdir,
+		Env:    []string{"GOOS=android", "CGO_ENABLED=1"},
+		Dir:    bindModuleDir,
+		Soname: bindSoname,
 	}
-	cmd.Dir = bindModuleDir
+	cfg.Env = append(cfg.Env, bindEnv()...)
+	displayArgs := []string{"-lang=go,java", "-outdir=" + tmpdir}
+	if bindModuleDir != "" {
+		cfg.Env = append(cfg.Env, "GOFLAGS=-mod=mod")
+	}
 	if len(buildTags) > 0 {
-		cmd.Args = append(cmd.Args, "-tags="+strings.Join(buildTags, ","))
+		cfg.Tags = append(cfg.Tags, buildTags...)
+		displayArgs = append(displayArgs, "-tags="+strings.Join(buildTags, ","))
 	}
 	if bindJavaPkg != "" {
-		cmd.Args = append(cmd.Args, "-javapkg="+bindJavaPkg)
+		cfg.JavaPkg = bindJavaPkg
+		displayArgs = append(displayArgs, "-javapkg="+bindJavaPkg)
 	}
 	if bindSoname != "gojni" || bindJavaPkg != "" {
-		cmd.Args = append(cmd.Args, "-soname="+bindSoname)
+		displayArgs = append(displayArgs, "-soname="+bindSoname)
 	}
 	if bindClasspath != "" {
-		cmd.Args = append(cmd.Args, "-classpath="+bindClasspath)
+		cfg.Classpath = bindClasspath
+		displayArgs = append(displayArgs, "-classpath="+bindClasspath)
 	}
 	if bindBootClasspath != "" {
-		cmd.Args = append(cmd.Args, "-bootclasspath="+bindBootClasspath)
+		cfg.Bootclasspath = bindBootClasspath
+		displayArgs = append(displayArgs, "-bootclasspath="+bindBootClasspath)
 	}
 	for _, p := range pkgs {
-		cmd.Args = append(cmd.Args, p.PkgPath)
+		cfg.Args = append(cfg.Args, p.PkgPath)
+		displayArgs = append(displayArgs, p.PkgPath)
 	}
-	if err := runCmd(cmd); err != nil {
+	if err := runGobind(cfg, displayArgs); err != nil {
 		return err
 	}
 

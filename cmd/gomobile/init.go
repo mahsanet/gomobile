@@ -78,11 +78,6 @@ func runInit(cmd *command) error {
 		removeAll(tmpdir)
 	}()
 
-	// Make sure gobind is up to date.
-	if err := goInstall([]string{"golang.org/x/mobile/cmd/gobind@latest"}, nil); err != nil {
-		return err
-	}
-
 	if buildN {
 		initOpenAL = "$OPENAL_PATH"
 	} else {
