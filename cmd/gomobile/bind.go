@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -334,7 +335,9 @@ func packagesConfig(t targetInfo) *packages.Config {
 	if len(tags) > 0 {
 		config.BuildFlags = []string{"-tags=" + strings.Join(tags, ",")}
 	}
-	if bindModuleDir != "" {
+	if bindVendorDir() != "" {
+		config.BuildFlags = append(config.BuildFlags, "-mod=vendor")
+	} else if bindModuleDir != "" {
 		config.BuildFlags = append(config.BuildFlags, "-mod=mod")
 	}
 	return config
@@ -627,6 +630,254 @@ func writeGoMod(dir, targetPlatform, targetArch string) error {
 		}
 		return nil
 	})
+}
+
+func bindVendorDir() string {
+	dir := bindModuleDir
+	if dir == "" {
+		cmd := exec.Command("go", "env", "GOMOD")
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		gomod := strings.TrimSpace(string(out))
+		if gomod == "" || gomod == os.DevNull {
+			return ""
+		}
+		dir = filepath.Dir(gomod)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "vendor", "modules.txt")); err != nil {
+		return ""
+	}
+	return dir
+}
+
+func copyBindModuleForVendor(dst string) error {
+	src := bindVendorDir()
+	if src == "" {
+		return fmt.Errorf("vendor directory is not available")
+	}
+	if err := copyBindDir(dst, src, func(rel string, info os.FileInfo) bool {
+		return rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator))
+	}); err != nil {
+		return err
+	}
+	return vendorMobileModule(dst)
+}
+
+func copyBindGeneratedSource(dst, src string) error {
+	return copyBindDir(dst, src, nil)
+}
+
+func copyBindDir(dst, src string, skip func(rel string, info os.FileInfo) bool) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, errin error) (err error) {
+		if errin != nil {
+			return errin
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dst, 0755)
+		}
+		if skip != nil && skip(rel, info) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		outpath := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(outpath, 0755)
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(outpath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if errc := out.Close(); err == nil {
+				err = errc
+			}
+		}()
+		_, err = io.Copy(out, in)
+		return err
+	})
+}
+
+func vendorMobileModule(moduleDir string) error {
+	modPath := mobileModulePath()
+	modulesTxt := filepath.Join(moduleDir, "vendor", "modules.txt")
+	b, err := os.ReadFile(modulesTxt)
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(b, []byte("# "+modPath+" ")) {
+		return nil
+	}
+
+	modDir, modVersion, err := mobileModuleSource()
+	if err != nil {
+		return err
+	}
+	if modDir == "" {
+		return fmt.Errorf("module %s has no source directory", modPath)
+	}
+	vendorDir := filepath.Join(moduleDir, "vendor", filepath.FromSlash(modPath))
+	if err := copyBindDir(vendorDir, modDir, func(rel string, info os.FileInfo) bool {
+		return rel == ".git" ||
+			strings.HasPrefix(rel, ".git"+string(filepath.Separator)) ||
+			rel == "vendor" ||
+			strings.HasPrefix(rel, "vendor"+string(filepath.Separator))
+	}); err != nil {
+		return err
+	}
+	if err := addMobileRequire(moduleDir, modPath, modVersion); err != nil {
+		return err
+	}
+	pkgs, err := vendorPackageList(vendorDir, modPath)
+	if err != nil {
+		return err
+	}
+	goVersion := vendorModuleGoVersion(modDir)
+	var entry strings.Builder
+	fmt.Fprintf(&entry, "\n# %s %s\n", modPath, modVersion)
+	if goVersion == "" {
+		fmt.Fprintln(&entry, "## explicit")
+	} else {
+		fmt.Fprintf(&entry, "## explicit; go %s\n", goVersion)
+	}
+	for _, p := range pkgs {
+		fmt.Fprintln(&entry, p)
+	}
+	f, err := os.OpenFile(modulesTxt, os.O_APPEND|os.O_WRONLY, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(entry.String())
+	return err
+}
+
+func mobileModuleSource() (dir, version string, err error) {
+	if _, file, _, ok := runtime.Caller(0); ok {
+		dir = filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+		if modulePathAt(dir) == mobileModulePath() {
+			version = mobileModuleVersion()
+			if version == "latest" {
+				version = "v0.0.0"
+			}
+			return dir, version, nil
+		}
+	}
+	mod, err := downloadModule(mobileModulePath(), mobileModuleVersion())
+	if err != nil {
+		return "", "", err
+	}
+	return mod.Dir, mod.Version, nil
+}
+
+func mobileModuleVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if ok {
+		if info.Main.Path == mobileModulePath() && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+		for _, dep := range info.Deps {
+			if dep.Path == mobileModulePath() && dep.Version != "" {
+				return dep.Version
+			}
+		}
+	}
+	return "latest"
+}
+
+func modulePathAt(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	f, err := modfile.Parse("go.mod", b, nil)
+	if err != nil || f.Module == nil {
+		return ""
+	}
+	return f.Module.Mod.Path
+}
+
+func addMobileRequire(moduleDir, path, version string) error {
+	gomod := filepath.Join(moduleDir, "go.mod")
+	b, err := os.ReadFile(gomod)
+	if err != nil {
+		return err
+	}
+	f, err := modfile.Parse(gomod, b, nil)
+	if err != nil {
+		return err
+	}
+	if err := f.AddRequire(path, version); err != nil {
+		return err
+	}
+	out, err := f.Format()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(gomod, out, 0666)
+}
+
+func vendorModuleGoVersion(moduleDir string) string {
+	b, err := os.ReadFile(filepath.Join(moduleDir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	f, err := modfile.Parse("go.mod", b, nil)
+	if err != nil || f.Go == nil {
+		return ""
+	}
+	return f.Go.Version
+}
+
+func vendorPackageList(moduleDir, modulePath string) ([]string, error) {
+	var pkgs []string
+	err := filepath.Walk(moduleDir, func(path string, info os.FileInfo, errin error) error {
+		if errin != nil {
+			return errin
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(moduleDir, path)
+		if err != nil {
+			return err
+		}
+		if rel != "." && strings.HasPrefix(filepath.Base(rel), ".") {
+			return filepath.SkipDir
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			if rel == "." {
+				pkgs = append(pkgs, modulePath)
+			} else {
+				pkgs = append(pkgs, modulePath+"/"+filepath.ToSlash(rel))
+			}
+			break
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pkgs, nil
 }
 
 var (

@@ -34,7 +34,9 @@ func goAndroidBind(pkgs []*packages.Package, targets []targetInfo) error {
 	}
 	cfg.Env = append(cfg.Env, bindEnv()...)
 	displayArgs := []string{"-lang=go,java", "-outdir=" + tmpdir}
-	if bindModuleDir != "" {
+	if bindVendorDir() != "" {
+		cfg.Env = append(cfg.Env, "GOFLAGS=-mod=vendor")
+	} else if bindModuleDir != "" {
 		cfg.Env = append(cfg.Env, "GOFLAGS=-mod=mod")
 	}
 	if len(buildTags) > 0 {
@@ -387,6 +389,7 @@ func buildAndroidSO(outputDir string, arch string) error {
 	if err != nil {
 		return err
 	}
+	vendorDir := bindVendorDir()
 
 	srcDir := filepath.Join(tmpdir, "src")
 
@@ -394,20 +397,33 @@ func buildAndroidSO(outputDir string, arch string) error {
 		// Copy the source directory for each architecture for concurrent building.
 		newSrcDir := filepath.Join(tmpdir, "src-android-"+arch)
 		if !buildN {
-			if err := doCopyAll(newSrcDir, srcDir); err != nil {
-				return err
+			if vendorDir != "" {
+				if err := copyBindModuleForVendor(newSrcDir); err != nil {
+					return err
+				}
+				if err := copyBindGeneratedSource(newSrcDir, srcDir); err != nil {
+					return err
+				}
+			} else {
+				if err := doCopyAll(newSrcDir, srcDir); err != nil {
+					return err
+				}
 			}
 		}
 		srcDir = newSrcDir
 
-		if err := writeGoMod(srcDir, "android", arch); err != nil {
-			return err
-		}
+		if vendorDir != "" {
+			env = appendEnvFlag(env, "GOFLAGS", "-mod=vendor")
+		} else {
+			if err := writeGoMod(srcDir, "android", arch); err != nil {
+				return err
+			}
 
-		// Run `go mod tidy` to force to create go.sum.
-		// Without go.sum, `go build` fails as of Go 1.16.
-		if err := goModTidyAt(srcDir, env); err != nil {
-			return err
+			// Run `go mod tidy` to force to create go.sum.
+			// Without go.sum, `go build` fails as of Go 1.16.
+			if err := goModTidyAt(srcDir, env); err != nil {
+				return err
+			}
 		}
 	}
 

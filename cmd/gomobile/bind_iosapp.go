@@ -70,7 +70,9 @@ func goAppleBind(pkgs []*packages.Package, targets []targetInfo) error {
 			}
 			cfg.Env = append(cfg.Env, bindEnv()...)
 			displayArgs := []string{"-lang=go,objc", "-outdir=" + outDir}
-			if bindModuleDir != "" {
+			if bindVendorDir() != "" {
+				cfg.Env = append(cfg.Env, "GOFLAGS=-mod=vendor")
+			} else if bindModuleDir != "" {
 				cfg.Env = append(cfg.Env, "GOFLAGS=-mod=mod")
 			}
 			tags := append(buildTags[:], platformTags(platform)...)
@@ -97,6 +99,7 @@ func goAppleBind(pkgs []*packages.Package, targets []targetInfo) error {
 	if err != nil {
 		return err
 	}
+	vendorDir := bindVendorDir()
 
 	// Build archive files.
 	var buildWG errgroup.Group
@@ -110,8 +113,17 @@ func goAppleBind(pkgs []*packages.Package, targets []targetInfo) error {
 				// Copy the source directory for each architecture for concurrent building.
 				newOutSrcDir := filepath.Join(outDir, "src-"+t.arch)
 				if !buildN {
-					if err := doCopyAll(newOutSrcDir, outSrcDir); err != nil {
-						return err
+					if vendorDir != "" {
+						if err := copyBindModuleForVendor(newOutSrcDir); err != nil {
+							return err
+						}
+						if err := copyBindGeneratedSource(newOutSrcDir, outSrcDir); err != nil {
+							return err
+						}
+					} else {
+						if err := doCopyAll(newOutSrcDir, outSrcDir); err != nil {
+							return err
+						}
 					}
 				}
 				outSrcDir = newOutSrcDir
@@ -132,10 +144,13 @@ func goAppleBind(pkgs []*packages.Package, targets []targetInfo) error {
 			gopaths = append(gopaths, goEnv("GOPATH"))
 			gopath := "GOPATH=" + strings.Join(gopaths, string(filepath.ListSeparator))
 			env = append(env, gopath)
+			if vendorDir != "" {
+				env = appendEnvFlag(env, "GOFLAGS", "-mod=vendor")
+			}
 
 			// Run `go mod tidy` to force to create go.sum.
 			// Without go.sum, `go build` fails as of Go 1.16.
-			if modulesUsed {
+			if modulesUsed && vendorDir == "" {
 				if err := writeGoMod(outSrcDir, t.platform, t.arch); err != nil {
 					return err
 				}
